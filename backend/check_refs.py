@@ -2,20 +2,25 @@
 Find dangling FHIR references (e.g. OrganizationAffiliation -> Location/4136336 that doesn't exist).
 
 Usage:
-    python check_refs.py H1619        # one contract, always re-downloaded fresh
-    python check_refs.py              # all contracts, always re-downloaded fresh
-    python check_refs.py H1619 --cache  # reuse ./cache/ instead of re-downloading
+    python check_refs.py H1619        # one contract
+    python check_refs.py              # all contracts
 
-Every run tests against the live endpoint by default -- no cached/stale data is
-used unless you explicitly pass --cache. Downloads each bundle into ./cache/, then:
-  Pass 1 - build a set of every (resourceType, id) that actually exists.
-  Pass 2 - walk every resource for "reference" fields and flag targets missing from that set.
+Every run downloads fresh from the live endpoint -- nothing is written to disk
+and nothing is cached between runs. Each constituent file is streamed into
+memory, parsed exactly ONCE, and immediately reduced to two lightweight
+things before the raw bytes/parsed JSON are dropped:
+  - every (resourceType, id) that actually exists (for connectivity checks)
+  - every (source type/id, field, target type/id) reference found in it
+Only after every file has been read this way does it check each collected
+reference against the collected existing-id set -- so no file ever needs to
+be read a second time, and only the extracted tuples (not the full parsed
+resources) are held in memory for the duration of the run.
 
-Outputs (per contract):
+Outputs (per contract) -- CSVs only, nothing else is written to disk:
   dangling_refs_<C>.csv      one row per broken reference
   dangling_summary_<C>.csv   affected counts + % per source type -> target type
 """
-import json, csv, re, os, sys, urllib.request, urllib.error, time
+import json, csv, re, sys, urllib.request, urllib.error, time
 
 CONTRACTS = {
     "H1619": "https://medicare-advantage-plan-finder-provider-directory.jeffersonhealthplans.com/h1619/2027/index.json",
@@ -29,8 +34,6 @@ CONTRACTS = {
 FNAME_RE = re.compile(r"(?P<contract>[hH]\d+)-(?P<year>\d+)-(?P<category>[a-z]+)-part(?P<part>\d+)\.json", re.I)
 # "Location/4136336", "Location/4136336/_history/1", or an absolute URL ending in Type/id
 REF_RE = re.compile(r"(?:^|/)(?P<type>[A-Z][A-Za-z]+)/(?P<id>[A-Za-z0-9\-.]{1,64})(?:/_history/.*)?$")
-
-CACHE = "cache"
 
 PLACEHOLDER_EXT_URL = "http://hapifhir.io/fhir/StructureDefinition/resource-placeholder"
 
@@ -85,99 +88,40 @@ def fetch(url, retries=6):
     raise last
 
 
-def download_to(url, path, attempts=40):
-    """Resumable streaming download. Writes to <path>.part, streaming in chunks so a
-    283MB file never sits in memory. On a mid-stream drop it resumes with an HTTP
-    Range request from the bytes already on disk instead of restarting from zero."""
-    part = path + ".part"
-    have = os.path.getsize(part) if os.path.exists(part) else 0
+def fetch_bytes(url, fname, attempts=8):
+    """Streams one constituent file fully into memory (never to disk) with
+    retry/backoff, logging progress as it goes so a 280MB+ file's download
+    is visible in the run log rather than looking hung. No caching, no
+    resume-from-partial -- a failed attempt just retries from zero; that is
+    the accepted trade-off of never persisting a partial file to disk."""
+    last = None
     for i in range(attempts):
         try:
-            headers = {"User-Agent": "Mozilla/5.0"}
-            if have:
-                headers["Range"] = f"bytes={have}-"
-            req = urllib.request.Request(url, headers=headers)
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
             with urllib.request.urlopen(req, timeout=300) as r:
-                status = r.status
-                # Server ignored Range (200 = full body): restart the file cleanly.
-                mode = "ab" if (have and status == 206) else "wb"
-                if mode == "wb":
-                    have = 0
-                total = r.length  # remaining bytes for this response, may be None
+                total = r.length
+                chunks = []
                 got = 0
-                with open(part, mode) as f:
-                    while True:
-                        chunk = r.read(1 << 20)  # 1 MB
-                        if not chunk:
-                            break
-                        f.write(chunk)
-                        got += len(chunk)
-                # If the server told us a length and we got it all, we're done.
-                if total is None or got >= total:
-                    os.replace(part, path)
-                    return
-                have = os.path.getsize(part)  # short read; loop to resume
-                print(f"    short read ({have:,} B so far), resuming...", flush=True)
-        except urllib.error.HTTPError as e:
-            # 416 = our .part is bigger than the server's file (stale/corrupt partial).
-            # Throw it away and restart from zero instead of looping on a bad range.
-            if e.code == 416 and os.path.exists(part):
-                os.remove(part)
-                have = 0
-                print(f"    stale partial (HTTP 416); discarded, restarting from 0",
-                      flush=True)
-                continue
-            have = os.path.getsize(part) if os.path.exists(part) else 0
-            wait = min(60, 3 * (2 ** min(i, 4)))
-            print(f"    retry {i+1}/{attempts} after HTTPError {e.code}: "
-                  f"({have:,} B on disk, waiting {wait}s)", flush=True)
-            time.sleep(wait)
+                next_log_mb = 50
+                while True:
+                    chunk = r.read(1 << 20)  # 1 MB
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                    got += len(chunk)
+                    if got >= next_log_mb * (1 << 20):
+                        print(f"    {fname}: {got / (1<<20):.0f} MB received...", flush=True)
+                        next_log_mb += 50
+                if total is not None and got < total:
+                    raise IOError(f"short read: got {got:,} of {total:,} bytes")
+                return b"".join(chunks)
         except Exception as e:
-            have = os.path.getsize(part) if os.path.exists(part) else 0
-            wait = min(60, 3 * (2 ** min(i, 4)))
+            last = e
+            wait = min(60, 3 * (2 ** i))
             print(f"    retry {i+1}/{attempts} after {type(e).__name__}: {e} "
-                  f"({have:,} B on disk, waiting {wait}s)", flush=True)
+                  f"(waiting {wait}s)", flush=True)
             time.sleep(wait)
-    raise RuntimeError(f"Failed to fully download {url} after {attempts} attempts")
-
-
-def cached_bytes(url, fname):
-    os.makedirs(CACHE, exist_ok=True)
-    path = os.path.join(CACHE, fname)
-    if os.path.exists(path) and os.path.getsize(path) > 0:
-        with open(path, "rb") as f:
-            return f.read()
-    download_to(url, path)
-    with open(path, "rb") as f:
-        return f.read()
-
-
-def meta_path(contract):
-    return os.path.join(CACHE, f"_last_updated_{contract}.txt")
-
-
-def ensure_fresh(contract, files, live_updated, force):
-    """Auto-invalidate the cache when the provider republishes.
-
-    We stamp each contract's cached data with the index 'last_updated'. If the live
-    value differs (or --fresh is given), delete this contract's cached files so they
-    re-download. Without this, a re-run silently reports on a stale snapshot and you
-    cannot tell whether a reported issue was actually fixed upstream."""
-    os.makedirs(CACHE, exist_ok=True)
-    mp = meta_path(contract)
-    prev = None
-    if os.path.exists(mp):
-        with open(mp, encoding="utf-8") as f:
-            prev = f.read().strip()
-    if force or (prev is not None and prev != str(live_updated)):
-        reason = "forced --fresh" if force else f"data changed ({prev} -> {live_updated})"
-        print(f"Cache invalidated: {reason}. Re-downloading this contract.", flush=True)
-        for _, fname, _, _ in files:
-            for p in (os.path.join(CACHE, fname), os.path.join(CACHE, fname + ".part")):
-                if os.path.exists(p):
-                    os.remove(p)
-    with open(mp, "w", encoding="utf-8") as f:
-        f.write(str(live_updated))
+    raise RuntimeError(f"Failed to fully download {url} after {attempts} attempts: {last}")
 
 
 def resources_of(raw):
@@ -244,25 +188,32 @@ def run(contract, index_url):
                       m.group("category") if m else "unknown",
                       int(m.group("part")) if m else 0))
 
-    # Drop stale cache if the provider republished (or --fresh was passed).
-    ensure_fresh(contract, files, idx.get("last_updated"), FORCE_FRESH)
-
-    # ---- Pass 1: every (resourceType, id) that exists ----
-    print("Pass 1: indexing existing resource ids ...", flush=True)
+    # ---- Single pass per file: download into memory, extract everything
+    # needed, then drop the raw bytes/parsed JSON before moving to the next
+    # file. Nothing is written to disk and no file is downloaded twice --
+    # references are collected here as lightweight tuples and checked for
+    # connectivity afterward, once every file's existing-id set is known.
+    print("Downloading + indexing (single pass per file, nothing written to disk) ...", flush=True)
     existing = set()
     raw_type_counts = {}          # includes duplicate ids (raw entry count)
     ext_placeholder_by_file = {}  # fname -> count of resources with resource-placeholder ext
+    all_refs = []                 # (src_type, src_id, fname, field, ref) -- checked after this loop
+
     for url, fname, category, part in files:
-        raw = cached_bytes(url, fname)
+        raw = fetch_bytes(url, fname)
         n = 0
         for r in resources_of(raw):
             rt, rid = r.get("resourceType"), r.get("id")
+            src_type, src_id = rt or "", str(rid) if rid is not None else ""
             if rt and rid is not None and str(rid) != "":
                 existing.add((rt, str(rid)))
                 raw_type_counts[rt] = raw_type_counts.get(rt, 0) + 1
             if has_placeholder_extension(r):
                 ext_placeholder_by_file[fname] = ext_placeholder_by_file.get(fname, 0) + 1
+            for field, ref in find_refs(r):
+                all_refs.append((src_type, src_id, fname, field, ref))
             n += 1
+        del raw  # drop this file's bytes/parsed JSON before the next one
         print(f"  {fname}: {n}", flush=True)
 
     if ext_placeholder_by_file:
@@ -279,8 +230,9 @@ def run(contract, index_url):
     print(f"Indexed {len(existing)} unique resources"
           f"{f' ({dups} duplicate ids collapsed)' if dups else ''}.", flush=True)
 
-    # ---- Pass 2: check every reference ----
-    print("Pass 2: checking references ...", flush=True)
+    # ---- Check every collected reference against the existing-id set ----
+    # (no file access here -- all_refs was already extracted above)
+    print("Checking references ...", flush=True)
     dangling = []                 # source_type, source_id, file, field, target_type, target_id
     affected = {}                 # (src_type, field, tgt_type) -> source ids with >=1 broken ref
     ref_totals = {}               # (src_type, field, tgt_type) -> total refs seen
@@ -290,29 +242,25 @@ def run(contract, index_url):
     placeholder_connected = {}    # (src_type, field, tgt_type) -> count where placeholder id resolved
     placeholder_total = {}        # (src_type, field, tgt_type) -> count of placeholder-looking ids seen
 
-    for url, fname, category, part in files:
-        raw = cached_bytes(url, fname)
-        for r in resources_of(raw):
-            src_type, src_id = r.get("resourceType", ""), str(r.get("id", ""))
-            for field, ref in find_refs(r):
-                parsed = parse_ref(ref)
-                if not parsed:
-                    continue
-                tgt_type, tgt_id = parsed
-                key = (src_type, field_root(field), tgt_type)
-                ref_totals[key] = ref_totals.get(key, 0) + 1
-                src_with_any_ref.setdefault(key, set()).add(src_id)
-                connected = (tgt_type, tgt_id) in existing
-                if not connected:
-                    dangling.append([src_type, src_id, fname, field, tgt_type, tgt_id, ref])
-                    affected.setdefault(key, set()).add(src_id)
-                    bad_ref_counts[key] = bad_ref_counts.get(key, 0) + 1
-                if is_placeholder_id(tgt_id):
-                    placeholder_refs.append([src_type, src_id, fname, field, tgt_type, tgt_id,
-                                              "yes" if connected else "no"])
-                    placeholder_total[key] = placeholder_total.get(key, 0) + 1
-                    if connected:
-                        placeholder_connected[key] = placeholder_connected.get(key, 0) + 1
+    for src_type, src_id, fname, field, ref in all_refs:
+        parsed = parse_ref(ref)
+        if not parsed:
+            continue
+        tgt_type, tgt_id = parsed
+        key = (src_type, field_root(field), tgt_type)
+        ref_totals[key] = ref_totals.get(key, 0) + 1
+        src_with_any_ref.setdefault(key, set()).add(src_id)
+        connected = (tgt_type, tgt_id) in existing
+        if not connected:
+            dangling.append([src_type, src_id, fname, field, tgt_type, tgt_id, ref])
+            affected.setdefault(key, set()).add(src_id)
+            bad_ref_counts[key] = bad_ref_counts.get(key, 0) + 1
+        if is_placeholder_id(tgt_id):
+            placeholder_refs.append([src_type, src_id, fname, field, tgt_type, tgt_id,
+                                      "yes" if connected else "no"])
+            placeholder_total[key] = placeholder_total.get(key, 0) + 1
+            if connected:
+                placeholder_connected[key] = placeholder_connected.get(key, 0) + 1
 
     # ---- Write per-reference detail ----
     with open(f"dangling_refs_{contract}.csv", "w", newline="", encoding="utf-8") as f:
@@ -444,22 +392,13 @@ def run(contract, index_url):
     return len(dangling)
 
 
-# Default: always fresh from the live endpoint. A module-level default (rather
-# than only set inside the CLI block below) so anything that imports this file
-# and calls run() directly -- e.g. the web backend -- gets the same "always
-# live" guarantee without having to know about the CLI flag.
-FORCE_FRESH = True
-
-# CLI: python check_refs.py [CONTRACT] [--cache]
+# CLI: python check_refs.py [CONTRACT]
 #   CONTRACT  run just one contract (default: all)
-#   --cache   reuse locally cached files instead of always re-downloading from
-#             the live endpoint (the default is a fresh download every run --
-#             this tool must always test against what's live right now, not a
-#             possibly-stale local copy from a previous run)
+# There is no cache and no --fresh/--cache flag anymore: every run streams
+# each file fresh from the live endpoint straight into memory and never
+# writes it to disk, so there is nothing to invalidate or reuse.
 if __name__ == "__main__":
     args = [a for a in sys.argv[1:]]
-    USE_CACHE = any(a.lower() in ("--cache", "-c") for a in args)
-    FORCE_FRESH = not USE_CACHE
     positional = [a for a in args if not a.startswith("-")]
     arg = positional[0].upper() if positional else None
 

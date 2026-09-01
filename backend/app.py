@@ -188,17 +188,19 @@ def _run_job(job_id, org, contract, index_url):
 
 
 def _run_refcheck_job(job_id, contract, index_url):
-    """Runs check_refs.run() (unmodified dangling-reference logic) in its own
-    job directory. check_refs.FORCE_FRESH is always True here -- every click
-    re-downloads from the live endpoint, never a locally cached copy, per the
-    requirement that this check must always test against what's live right now."""
+    """Runs check_refs.run() (unmodified dangling-reference/connectivity logic)
+    in its own job directory. check_refs.py always streams each constituent
+    file fresh from the live endpoint straight into memory -- it never writes
+    the downloaded JSON to disk and never reuses a prior run's data, so every
+    click here is a full live re-test. The job directory is still used as the
+    cwd so run()'s CSV outputs land somewhere per-job and don't collide with
+    other concurrent jobs."""
     job_dir = os.path.join(REFJOBS_DIR, job_id)
     os.makedirs(job_dir, exist_ok=True)
     cwd_before = os.getcwd()
     log_path = os.path.join(job_dir, "run.log")
     try:
         os.chdir(job_dir)
-        check_refs.FORCE_FRESH = True
         with open(log_path, "w", encoding="utf-8", buffering=1) as logf:
             with contextlib.redirect_stdout(logf):
                 total_dangling = check_refs.run(contract, index_url)
