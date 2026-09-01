@@ -55,10 +55,50 @@ body {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
   gap: 20px;
+  margin-bottom: 24px;
 }
 
 @media (max-width: 560px) {
   .contract-grid { grid-template-columns: 1fr; }
+}
+
+.mode-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 20px;
+}
+
+@media (max-width: 640px) {
+  .mode-grid { grid-template-columns: 1fr; }
+}
+
+.mode-card {
+  background: var(--card);
+  border: 2px solid var(--border);
+  border-radius: 12px;
+  padding: 32px 28px;
+  cursor: pointer;
+  transition: border-color .15s, box-shadow .15s, transform .1s;
+}
+
+.mode-card:hover {
+  border-color: var(--blue);
+  box-shadow: 0 4px 14px rgba(29, 111, 214, 0.15);
+  transform: translateY(-2px);
+}
+
+.mode-title {
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: var(--navy);
+  margin-bottom: 10px;
+}
+
+.mode-desc {
+  color: var(--muted);
+  font-size: 0.9rem;
+  line-height: 1.5;
+  margin-bottom: 18px;
 }
 
 .contract-card {

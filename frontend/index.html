@@ -13,24 +13,37 @@
 
   <main id="app" class="container">
 
-    <!-- SCREEN 1: contract selection -->
-    <section id="screen-select" class="screen">
-      <p class="lead">Select a Contract ID to start processing.</p>
-      <div id="contract-grid" class="contract-grid">
-        <p class="muted">Loading contracts...</p>
+    <!-- SCREEN: home -- pick which tool -->
+    <section id="screen-home" class="screen">
+      <p class="lead">Choose a tool.</p>
+      <div class="mode-grid">
+        <div class="mode-card" data-mode="validate">
+          <div class="mode-title">Provider Directory Validation</div>
+          <p class="mode-desc">Full Appendix A/B/D/E validation of a contract's provider directory
+            submission -- required fields, formats, freshness, and error codes.</p>
+          <div class="select-label">Open</div>
+        </div>
+        <div class="mode-card" data-mode="refcheck">
+          <div class="mode-title">Reference Integrity Test</div>
+          <p class="mode-desc">Checks every FHIR reference (Location, Organization, Practitioner, etc.)
+            in a contract's data and flags any that point at a resource that doesn't exist.</p>
+          <div class="select-label">Open</div>
+        </div>
       </div>
     </section>
 
-    <!-- SCREEN 2: confirm + start -->
+    <!-- SCREEN: contract selection (shared by both tools) -->
+    <section id="screen-select" class="screen hidden">
+      <p class="lead" id="select-lead">Select a Contract ID to start processing.</p>
+      <div id="contract-grid" class="contract-grid">
+        <p class="muted">Loading contracts...</p>
+      </div>
+      <button class="btn btn-link" data-action="back-to-home">&larr; Back to Tool Selection</button>
+    </section>
+
+    <!-- SCREEN: validation confirm + start -->
     <section id="screen-confirm" class="screen hidden">
       <p class="lead">Selected Contract: <strong id="confirm-contract"></strong></p>
-
-      <div class="action-row">
-        <button id="start-btn" class="btn btn-primary">Start Processing</button>
-        <button id="refcheck-btn" class="btn btn-secondary">Check Dangling References (Live)</button>
-      </div>
-      <p class="muted small">Both always run fresh against the live source endpoint -- nothing is cached
-        or reused between clicks.</p>
 
       <table class="detail-table">
         <tbody>
@@ -40,17 +53,23 @@
         </tbody>
       </table>
 
+      <div class="action-row">
+        <button id="start-btn" class="btn btn-primary">Start Processing</button>
+      </div>
+      <p class="muted small">Always runs fresh against the live source endpoint -- nothing is cached
+        or reused between clicks. Very large contracts can take several minutes.</p>
+
       <button class="btn btn-link" data-action="back-to-select">&larr; Back to Contract Selection</button>
     </section>
 
-    <!-- SCREEN 3: processing -->
+    <!-- SCREEN: validation processing -->
     <section id="screen-processing" class="screen hidden">
       <div class="spinner"></div>
       <p class="lead">Processing <strong id="processing-contract"></strong>...</p>
       <p class="muted">Please wait while the provider data is being processed. This can take a few minutes for large contracts.</p>
     </section>
 
-    <!-- SCREEN 4: results -->
+    <!-- SCREEN: validation results -->
     <section id="screen-results" class="screen hidden">
       <p class="lead"><strong id="results-contract"></strong> Processing Completed</p>
       <p class="status-ok">&#10003; Processing completed successfully</p>
@@ -89,9 +108,39 @@
       <button class="btn btn-link" data-action="back-to-select">&larr; Back to Contract Selection</button>
     </section>
 
-    <!-- SCREEN 6: dangling-reference live check -->
+    <!-- SCREEN: validation error -->
+    <section id="screen-error" class="screen hidden">
+      <p class="lead status-fail">Processing Failed</p>
+      <p id="error-message" class="muted"></p>
+      <button id="retry-btn" class="btn btn-primary">Try Again</button>
+      <button class="btn btn-link" data-action="back-to-select">&larr; Back to Contract Selection</button>
+    </section>
+
+    <!-- SCREEN: reference integrity confirm + run -->
+    <section id="screen-refcheck-confirm" class="screen hidden">
+      <p class="lead">Selected Contract: <strong id="refconfirm-contract"></strong></p>
+
+      <table class="detail-table">
+        <tbody>
+          <tr><td>Organization</td><td id="refconfirm-org"></td></tr>
+          <tr><td>Contract</td><td id="refconfirm-contract-id"></td></tr>
+          <tr><td>Source Index URL</td><td id="refconfirm-url" class="url-cell"></td></tr>
+        </tbody>
+      </table>
+
+      <div class="action-row">
+        <button id="refcheck-btn" class="btn btn-primary">Run Reference Integrity Test</button>
+      </div>
+      <p class="muted small">Always downloads fresh from the live source endpoint on every run -- nothing
+        is cached or reused between clicks. Note: very large contracts (280MB+ files) can take several
+        minutes and, on constrained hosting, may occasionally need a retry.</p>
+
+      <button class="btn btn-link" data-action="back-to-select">&larr; Back to Contract Selection</button>
+    </section>
+
+    <!-- SCREEN: reference integrity live run + results -->
     <section id="screen-refcheck" class="screen hidden">
-      <p class="lead">Dangling Reference Check: <strong id="refcheck-contract"></strong></p>
+      <p class="lead">Reference Integrity Test: <strong id="refcheck-contract"></strong></p>
       <p id="refcheck-status" class="muted">Downloading fresh from the live endpoint and checking references...</p>
 
       <h2>Running Details</h2>
@@ -111,14 +160,6 @@
         <button id="refcheck-rerun-btn" class="btn btn-secondary hidden">Run Again (Live)</button>
         <button class="btn btn-link" data-action="back-to-select">&larr; Back to Contract Selection</button>
       </div>
-    </section>
-
-    <!-- SCREEN 5: error -->
-    <section id="screen-error" class="screen hidden">
-      <p class="lead status-fail">Processing Failed</p>
-      <p id="error-message" class="muted"></p>
-      <button id="retry-btn" class="btn btn-primary">Try Again</button>
-      <button class="btn btn-link" data-action="back-to-select">&larr; Back to Contract Selection</button>
     </section>
 
   </main>

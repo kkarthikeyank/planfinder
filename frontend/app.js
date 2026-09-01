@@ -3,15 +3,18 @@
   const POLL_INTERVAL_MS = 4000;
 
   const screens = {
+    home: document.getElementById("screen-home"),
     select: document.getElementById("screen-select"),
     confirm: document.getElementById("screen-confirm"),
     processing: document.getElementById("screen-processing"),
     results: document.getElementById("screen-results"),
     error: document.getElementById("screen-error"),
+    refcheckConfirm: document.getElementById("screen-refcheck-confirm"),
     refcheck: document.getElementById("screen-refcheck"),
   };
 
   let contractsById = {};
+  let currentMode = null; // "validate" | "refcheck"
   let selectedContract = null;
   let currentJobId = null;
   let pollTimer = null;
@@ -47,33 +50,64 @@
   }
 
   async function loadContracts() {
-    const grid = document.getElementById("contract-grid");
     try {
       const res = await fetch(`${API_BASE}/api/contracts`);
       if (!res.ok) throw new Error("bad response");
       const data = await res.json();
-      grid.innerHTML = "";
       contractsById = {};
       data.contracts.forEach((c) => {
         contractsById[c.contract] = c;
-        const card = document.createElement("div");
-        card.className = "contract-card";
-        card.innerHTML = `
-          <div class="contract-id">${c.contract}</div>
-          <div class="contract-org">${c.org}</div>
-          <div class="select-label">Select</div>
-        `;
-        card.addEventListener("click", () => selectContract(c.contract));
-        grid.appendChild(card);
       });
     } catch (err) {
-      grid.innerHTML = `<p class="muted">Could not reach the processing server. Please check back later.</p>`;
+      contractsById = null; // signals "could not reach server" to renderContractGrid
     }
+  }
+
+  function renderContractGrid() {
+    const grid = document.getElementById("contract-grid");
+    const lead = document.getElementById("select-lead");
+    lead.textContent =
+      currentMode === "refcheck"
+        ? "Select a Contract ID to run the Reference Integrity Test."
+        : "Select a Contract ID to start processing.";
+
+    if (!contractsById) {
+      grid.innerHTML = `<p class="muted">Could not reach the processing server. Please check back later.</p>`;
+      return;
+    }
+    grid.innerHTML = "";
+    Object.values(contractsById).forEach((c) => {
+      const card = document.createElement("div");
+      card.className = "contract-card";
+      card.innerHTML = `
+        <div class="contract-id">${c.contract}</div>
+        <div class="contract-org">${c.org}</div>
+        <div class="select-label">Select</div>
+      `;
+      card.addEventListener("click", () => selectContract(c.contract));
+      grid.appendChild(card);
+    });
+  }
+
+  function openMode(mode) {
+    currentMode = mode;
+    renderContractGrid();
+    showScreen("select");
   }
 
   function selectContract(contract) {
     selectedContract = contract;
     const c = contractsById[contract] || {};
+
+    if (currentMode === "refcheck") {
+      document.getElementById("refconfirm-contract").textContent = contract;
+      document.getElementById("refconfirm-org").textContent = c.org || "-";
+      document.getElementById("refconfirm-contract-id").textContent = c.contract || contract;
+      document.getElementById("refconfirm-url").textContent = c.index_url || "-";
+      showScreen("refcheckConfirm");
+      return;
+    }
+
     document.getElementById("confirm-contract").textContent = contract;
     document.getElementById("confirm-org").textContent = c.org || "-";
     document.getElementById("confirm-contract-id").textContent = c.contract || contract;
@@ -121,7 +155,7 @@
       // failed
       showError(job.error || "Processing failed. Please try again.");
     } catch (err) {
-      showError(err.message || "Lost contact with the processing server.");
+      showError(networkErrorMessage(err));
     }
   }
 
@@ -253,8 +287,8 @@
       pollRefStatus();
       pollRefLog();
     } catch (err) {
-      document.getElementById("refcheck-status").textContent =
-        err.message || "Could not start the reference check.";
+      document.getElementById("refcheck-status").textContent = networkErrorMessage(err);
+      document.getElementById("refcheck-rerun-btn").classList.remove("hidden");
     }
   }
 
@@ -281,8 +315,7 @@
         document.getElementById("refcheck-rerun-btn").classList.remove("hidden");
       }
     } catch (err) {
-      document.getElementById("refcheck-status").textContent =
-        err.message || "Lost contact with the processing server.";
+      document.getElementById("refcheck-status").textContent = networkErrorMessage(err);
       document.getElementById("refcheck-rerun-btn").classList.remove("hidden");
     }
   }
@@ -338,6 +371,15 @@
     showScreen("error");
   }
 
+  function networkErrorMessage(err) {
+    const raw = (err && err.message) || "";
+    if (/failed to fetch|networkerror|load failed/i.test(raw)) {
+      return "Could not reach the processing server. It may be waking up from idle (free hosting sleeps " +
+        "after inactivity) or restarting after handling a very large file -- wait a minute and try again.";
+    }
+    return raw || "Something went wrong. Please try again.";
+  }
+
   function fmt(n) {
     if (n === null || n === undefined) return "-";
     return Number(n).toLocaleString();
@@ -352,20 +394,37 @@
     });
   });
 
+  document.querySelectorAll(".mode-card").forEach((card) => {
+    card.addEventListener("click", () => openMode(card.dataset.mode));
+  });
+
   document.getElementById("start-btn").addEventListener("click", startProcessing);
   document.getElementById("retry-btn").addEventListener("click", startProcessing);
   document.getElementById("refcheck-btn").addEventListener("click", startRefCheck);
   document.getElementById("refcheck-rerun-btn").addEventListener("click", startRefCheck);
+
   document.querySelectorAll('[data-action="back-to-select"]').forEach((btn) => {
     btn.addEventListener("click", () => {
       stopPolling();
       selectedContract = null;
       currentJobId = null;
       currentRefJobId = null;
+      renderContractGrid();
       showScreen("select");
     });
   });
 
+  document.querySelectorAll('[data-action="back-to-home"]').forEach((btn) => {
+    btn.addEventListener("click", () => {
+      stopPolling();
+      currentMode = null;
+      selectedContract = null;
+      currentJobId = null;
+      currentRefJobId = null;
+      showScreen("home");
+    });
+  });
+
   loadContracts();
-  showScreen("select");
+  showScreen("home");
 })();
