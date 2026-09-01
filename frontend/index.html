@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Provider Directory Validation Tool</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <h1>Provider Directory Validation Tool</h1>
+  </header>
+
+  <main id="app" class="container">
+
+    <!-- SCREEN 1: contract selection -->
+    <section id="screen-select" class="screen">
+      <p class="lead">Select a Contract ID to start processing.</p>
+      <div id="contract-grid" class="contract-grid">
+        <p class="muted">Loading contracts...</p>
+      </div>
+    </section>
+
+    <!-- SCREEN 2: confirm + start -->
+    <section id="screen-confirm" class="screen hidden">
+      <p class="lead">Selected Contract: <strong id="confirm-contract"></strong></p>
+      <button id="start-btn" class="btn btn-primary">Start Processing</button>
+      <button class="btn btn-link" data-action="back-to-select">&larr; Back to Contract Selection</button>
+    </section>
+
+    <!-- SCREEN 3: processing -->
+    <section id="screen-processing" class="screen hidden">
+      <div class="spinner"></div>
+      <p class="lead">Processing <strong id="processing-contract"></strong>...</p>
+      <p class="muted">Please wait while the provider data is being processed. This can take a few minutes for large contracts.</p>
+    </section>
+
+    <!-- SCREEN 4: results -->
+    <section id="screen-results" class="screen hidden">
+      <p class="lead"><strong id="results-contract"></strong> Processing Completed</p>
+      <p class="status-ok">&#10003; Processing completed successfully</p>
+
+      <table class="summary-table">
+        <tbody id="summary-table-body"></tbody>
+      </table>
+
+      <h2>Generated Files</h2>
+      <ul id="file-list" class="file-list"></ul>
+
+      <h2>Error Codes (Appendix E)</h2>
+      <p class="muted" id="codes-subtitle"></p>
+      <div class="codes-filter">
+        <button class="chip active" data-filter="all">All</button>
+        <button class="chip" data-filter="fail">Failed only</button>
+        <button class="chip" data-filter="pass">Passed only</button>
+      </div>
+      <div class="codes-table-wrap">
+        <table class="codes-table">
+          <thead>
+            <tr>
+              <th>Code</th>
+              <th>Check</th>
+              <th>Resource Types Tested</th>
+              <th>Total Pass</th>
+              <th>Total Fail</th>
+              <th>Expected</th>
+              <th>Actual (examples)</th>
+            </tr>
+          </thead>
+          <tbody id="codes-table-body"></tbody>
+        </table>
+      </div>
+
+      <button class="btn btn-link" data-action="back-to-select">&larr; Back to Contract Selection</button>
+    </section>
+
+    <!-- SCREEN 5: error -->
+    <section id="screen-error" class="screen hidden">
+      <p class="lead status-fail">Processing Failed</p>
+      <p id="error-message" class="muted"></p>
+      <button id="retry-btn" class="btn btn-primary">Try Again</button>
+      <button class="btn btn-link" data-action="back-to-select">&larr; Back to Contract Selection</button>
+    </section>
+
+  </main>
+
+  <script src="config.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

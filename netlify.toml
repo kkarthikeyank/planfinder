@@ -1,0 +1,9 @@
+[build]
+  publish = "frontend"
+  command = "echo 'static site, no build step needed'"
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Frame-Options = "DENY"
+    X-Content-Type-Options = "nosniff"

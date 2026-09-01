@@ -1,0 +1,8 @@
+backend/jobs/
+backend/__pycache__/
+backend/*.pyc
+backend/venv/
+backend/*.log
+frontend/*.log
+.DS_Store
+.claude/
