@@ -8,13 +8,19 @@
     processing: document.getElementById("screen-processing"),
     results: document.getElementById("screen-results"),
     error: document.getElementById("screen-error"),
+    refcheck: document.getElementById("screen-refcheck"),
   };
 
+  let contractsById = {};
   let selectedContract = null;
   let currentJobId = null;
   let pollTimer = null;
   let allCodes = [];
   let codesFilter = "all";
+
+  let currentRefJobId = null;
+  let refStatusPollTimer = null;
+  let refLogPollTimer = null;
 
   function showScreen(name) {
     Object.values(screens).forEach((s) => s.classList.add("hidden"));
@@ -26,6 +32,18 @@
       clearTimeout(pollTimer);
       pollTimer = null;
     }
+    stopRefPolling();
+  }
+
+  function stopRefPolling() {
+    if (refStatusPollTimer) {
+      clearTimeout(refStatusPollTimer);
+      refStatusPollTimer = null;
+    }
+    if (refLogPollTimer) {
+      clearTimeout(refLogPollTimer);
+      refLogPollTimer = null;
+    }
   }
 
   async function loadContracts() {
@@ -35,7 +53,9 @@
       if (!res.ok) throw new Error("bad response");
       const data = await res.json();
       grid.innerHTML = "";
+      contractsById = {};
       data.contracts.forEach((c) => {
+        contractsById[c.contract] = c;
         const card = document.createElement("div");
         card.className = "contract-card";
         card.innerHTML = `
@@ -53,7 +73,11 @@
 
   function selectContract(contract) {
     selectedContract = contract;
+    const c = contractsById[contract] || {};
     document.getElementById("confirm-contract").textContent = contract;
+    document.getElementById("confirm-org").textContent = c.org || "-";
+    document.getElementById("confirm-contract-id").textContent = c.contract || contract;
+    document.getElementById("confirm-url").textContent = c.index_url || "-";
     showScreen("confirm");
   }
 
@@ -204,6 +228,110 @@
       .replace(/>/g, "&gt;");
   }
 
+  async function startRefCheck() {
+    stopPolling();
+    document.getElementById("refcheck-contract").textContent = selectedContract;
+    document.getElementById("refcheck-status").textContent =
+      "Downloading fresh from the live endpoint and checking references...";
+    document.getElementById("refcheck-log").textContent = "Starting...";
+    document.getElementById("refcheck-summary-wrap").classList.add("hidden");
+    document.getElementById("refcheck-rerun-btn").classList.add("hidden");
+    showScreen("refcheck");
+
+    try {
+      const res = await fetch(`${API_BASE}/api/refcheck/jobs`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ contract: selectedContract }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || "Could not start the reference check.");
+      }
+      const data = await res.json();
+      currentRefJobId = data.job_id;
+      pollRefStatus();
+      pollRefLog();
+    } catch (err) {
+      document.getElementById("refcheck-status").textContent =
+        err.message || "Could not start the reference check.";
+    }
+  }
+
+  async function pollRefStatus() {
+    try {
+      const res = await fetch(`${API_BASE}/api/refcheck/jobs/${currentRefJobId}`);
+      if (!res.ok) throw new Error("Lost contact with the processing server.");
+      const job = await res.json();
+
+      if (job.status === "running") {
+        refStatusPollTimer = setTimeout(pollRefStatus, POLL_INTERVAL_MS);
+        return;
+      }
+      if (refLogPollTimer) {
+        clearTimeout(refLogPollTimer);
+        refLogPollTimer = null;
+      }
+      await pollRefLog(); // one last fetch to catch the final lines
+      if (job.status === "completed") {
+        showRefResults(job);
+      } else {
+        document.getElementById("refcheck-status").textContent =
+          job.error || "Reference check failed. Please try again.";
+        document.getElementById("refcheck-rerun-btn").classList.remove("hidden");
+      }
+    } catch (err) {
+      document.getElementById("refcheck-status").textContent =
+        err.message || "Lost contact with the processing server.";
+      document.getElementById("refcheck-rerun-btn").classList.remove("hidden");
+    }
+  }
+
+  async function pollRefLog() {
+    try {
+      const res = await fetch(`${API_BASE}/api/refcheck/jobs/${currentRefJobId}/log`);
+      if (res.ok) {
+        const text = await res.text();
+        const box = document.getElementById("refcheck-log");
+        const wasAtBottom = box.scrollTop + box.clientHeight >= box.scrollHeight - 20;
+        box.textContent = text || "Starting...";
+        if (wasAtBottom) box.scrollTop = box.scrollHeight;
+      }
+    } catch (err) {
+      // transient -- next status poll will surface a real error if the job actually died
+    }
+    if (refStatusPollTimer) {
+      refLogPollTimer = setTimeout(pollRefLog, POLL_INTERVAL_MS);
+    }
+  }
+
+  function showRefResults(job) {
+    document.getElementById("refcheck-status").textContent = "Reference check completed successfully.";
+    const s = job.summary || {};
+    const rows = [
+      ["Total Dangling References", fmt(s.total_dangling_refs)],
+      ["CSV Files Generated", fmt(s.csv_files_generated)],
+    ];
+    document.getElementById("refcheck-summary-body").innerHTML = rows
+      .map(([label, val]) => `<tr><td>${label}</td><td>${val}</td></tr>`)
+      .join("");
+
+    const list = document.getElementById("refcheck-file-list");
+    list.innerHTML = "";
+    (job.files || []).forEach((filename) => {
+      const li = document.createElement("li");
+      const link = `${API_BASE}/api/refcheck/jobs/${job.job_id}/files/${encodeURIComponent(filename)}`;
+      li.innerHTML = `
+        <span class="file-name">${filename}</span>
+        <a class="btn btn-primary" href="${link}" target="_blank" rel="noopener">Download</a>
+      `;
+      list.appendChild(li);
+    });
+
+    document.getElementById("refcheck-summary-wrap").classList.remove("hidden");
+    document.getElementById("refcheck-rerun-btn").classList.remove("hidden");
+  }
+
   function showError(message) {
     stopPolling();
     document.getElementById("error-message").textContent = message;
@@ -226,11 +354,14 @@
 
   document.getElementById("start-btn").addEventListener("click", startProcessing);
   document.getElementById("retry-btn").addEventListener("click", startProcessing);
+  document.getElementById("refcheck-btn").addEventListener("click", startRefCheck);
+  document.getElementById("refcheck-rerun-btn").addEventListener("click", startRefCheck);
   document.querySelectorAll('[data-action="back-to-select"]').forEach((btn) => {
     btn.addEventListener("click", () => {
       stopPolling();
       selectedContract = null;
       currentJobId = null;
+      currentRefJobId = null;
       showScreen("select");
     });
   });

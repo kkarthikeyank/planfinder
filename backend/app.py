@@ -11,6 +11,7 @@ Endpoints:
 Each job runs validate_ma_plan.process_plan() (unmodified business logic) in its own
 working directory, then reports back exactly which CSVs it produced.
 """
+import contextlib
 import os
 import re
 import threading
@@ -18,10 +19,11 @@ import traceback
 import uuid
 from collections import defaultdict
 
-from flask import Flask, jsonify, request, send_from_directory, abort
+from flask import Flask, jsonify, request, send_from_directory, abort, Response
 from flask_cors import CORS
 
 import validate_ma_plan as validator
+import check_refs
 
 app = Flask(__name__)
 CORS(app)
@@ -29,9 +31,18 @@ CORS(app)
 JOBS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "jobs")
 os.makedirs(JOBS_DIR, exist_ok=True)
 
+REFJOBS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "refjobs")
+os.makedirs(REFJOBS_DIR, exist_ok=True)
+
 # job_id -> {status, org, contract, started_at, finished_at, summary, files, error}
 JOBS = {}
 JOBS_LOCK = threading.Lock()
+
+# job_id -> {status, contract, summary, files, error} -- dangling-reference
+# check jobs (check_refs.py), tracked separately from the main validation jobs
+# above since they're a different tool with a different output shape.
+REFJOBS = {}
+REFJOBS_LOCK = threading.Lock()
 
 # The 4 contracts this tool offers, read directly from the existing script's
 # PLANS configuration -- never hand-typed here, so this can never drift out
@@ -174,6 +185,112 @@ def _run_job(job_id, org, contract, index_url):
         os.chdir(cwd_before)
         with JOBS_LOCK:
             JOBS[job_id]["finished"] = True
+
+
+def _run_refcheck_job(job_id, contract, index_url):
+    """Runs check_refs.run() (unmodified dangling-reference logic) in its own
+    job directory. check_refs.FORCE_FRESH is always True here -- every click
+    re-downloads from the live endpoint, never a locally cached copy, per the
+    requirement that this check must always test against what's live right now."""
+    job_dir = os.path.join(REFJOBS_DIR, job_id)
+    os.makedirs(job_dir, exist_ok=True)
+    cwd_before = os.getcwd()
+    log_path = os.path.join(job_dir, "run.log")
+    try:
+        os.chdir(job_dir)
+        check_refs.FORCE_FRESH = True
+        with open(log_path, "w", encoding="utf-8", buffering=1) as logf:
+            with contextlib.redirect_stdout(logf):
+                total_dangling = check_refs.run(contract, index_url)
+
+        files = sorted(f for f in os.listdir(job_dir) if f.lower().endswith(".csv"))
+        summary = {
+            "contract": contract,
+            "total_dangling_refs": total_dangling,
+            "csv_files_generated": len(files),
+        }
+        with REFJOBS_LOCK:
+            REFJOBS[job_id]["status"] = "completed"
+            REFJOBS[job_id]["summary"] = summary
+            REFJOBS[job_id]["files"] = files
+    except Exception as e:
+        traceback.print_exc()
+        with REFJOBS_LOCK:
+            REFJOBS[job_id]["status"] = "failed"
+            REFJOBS[job_id]["error"] = str(e)
+    finally:
+        os.chdir(cwd_before)
+
+
+@app.post("/api/refcheck/jobs")
+def create_refcheck_job():
+    data = request.get_json(silent=True) or {}
+    contract = (data.get("contract") or "").strip().upper()
+    plan = CONTRACTS_BY_ID.get(contract)
+    if not plan:
+        return jsonify({"error": f"Unknown contract '{contract}'. Valid options: "
+                                  f"{', '.join(CONTRACTS_BY_ID.keys())}"}), 400
+
+    job_id = uuid.uuid4().hex[:12]
+    with REFJOBS_LOCK:
+        REFJOBS[job_id] = {
+            "job_id": job_id,
+            "status": "running",
+            "contract": contract,
+            "summary": None,
+            "files": [],
+            "error": None,
+        }
+
+    t = threading.Thread(target=_run_refcheck_job, args=(job_id, contract, plan["index_url"]), daemon=True)
+    t.start()
+    return jsonify({"job_id": job_id}), 202
+
+
+@app.get("/api/refcheck/jobs/<job_id>")
+def refcheck_job_status(job_id):
+    with REFJOBS_LOCK:
+        job = REFJOBS.get(job_id)
+    if not job:
+        return jsonify({"error": "Job not found"}), 404
+    public_error = "Reference check failed. Please try again." if job.get("error") else None
+    return jsonify({
+        "job_id": job["job_id"],
+        "status": job["status"],
+        "contract": job["contract"],
+        "summary": job["summary"],
+        "files": job["files"],
+        "error": public_error,
+    })
+
+
+@app.get("/api/refcheck/jobs/<job_id>/log")
+def refcheck_job_log(job_id):
+    """Live console output from the running check -- the same lines that
+    print to the terminal when run as a CLI script -- so the UI can show
+    'all the running details' as they happen, not just a final result."""
+    with REFJOBS_LOCK:
+        job = REFJOBS.get(job_id)
+    if not job:
+        abort(404)
+    log_path = os.path.join(REFJOBS_DIR, job_id, "run.log")
+    text = ""
+    if os.path.exists(log_path):
+        with open(log_path, "r", encoding="utf-8", errors="replace") as f:
+            text = f.read()
+    return Response(text, mimetype="text/plain")
+
+
+@app.get("/api/refcheck/jobs/<job_id>/files/<path:filename>")
+def download_refcheck_file(job_id, filename):
+    with REFJOBS_LOCK:
+        job = REFJOBS.get(job_id)
+    if not job:
+        abort(404)
+    job_dir = os.path.join(REFJOBS_DIR, job_id)
+    if filename not in job.get("files", []):
+        abort(404)
+    return send_from_directory(job_dir, filename, as_attachment=True)
 
 
 @app.get("/api/health")

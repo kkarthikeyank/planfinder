@@ -24,7 +24,22 @@
     <!-- SCREEN 2: confirm + start -->
     <section id="screen-confirm" class="screen hidden">
       <p class="lead">Selected Contract: <strong id="confirm-contract"></strong></p>
-      <button id="start-btn" class="btn btn-primary">Start Processing</button>
+
+      <div class="action-row">
+        <button id="start-btn" class="btn btn-primary">Start Processing</button>
+        <button id="refcheck-btn" class="btn btn-secondary">Check Dangling References (Live)</button>
+      </div>
+      <p class="muted small">Both always run fresh against the live source endpoint -- nothing is cached
+        or reused between clicks.</p>
+
+      <table class="detail-table">
+        <tbody>
+          <tr><td>Organization</td><td id="confirm-org"></td></tr>
+          <tr><td>Contract</td><td id="confirm-contract-id"></td></tr>
+          <tr><td>Source Index URL</td><td id="confirm-url" class="url-cell"></td></tr>
+        </tbody>
+      </table>
+
       <button class="btn btn-link" data-action="back-to-select">&larr; Back to Contract Selection</button>
     </section>
 
@@ -72,6 +87,30 @@
       </div>
 
       <button class="btn btn-link" data-action="back-to-select">&larr; Back to Contract Selection</button>
+    </section>
+
+    <!-- SCREEN 6: dangling-reference live check -->
+    <section id="screen-refcheck" class="screen hidden">
+      <p class="lead">Dangling Reference Check: <strong id="refcheck-contract"></strong></p>
+      <p id="refcheck-status" class="muted">Downloading fresh from the live endpoint and checking references...</p>
+
+      <h2>Running Details</h2>
+      <pre id="refcheck-log" class="log-box">Starting...</pre>
+
+      <div id="refcheck-summary-wrap" class="hidden">
+        <h2>Summary</h2>
+        <table class="summary-table">
+          <tbody id="refcheck-summary-body"></tbody>
+        </table>
+
+        <h2>Generated Files</h2>
+        <ul id="refcheck-file-list" class="file-list"></ul>
+      </div>
+
+      <div class="action-row">
+        <button id="refcheck-rerun-btn" class="btn btn-secondary hidden">Run Again (Live)</button>
+        <button class="btn btn-link" data-action="back-to-select">&larr; Back to Contract Selection</button>
+      </div>
     </section>
 
     <!-- SCREEN 5: error -->

@@ -1,4 +1,6 @@
 backend/jobs/
+backend/refjobs/
+backend/cache/
 backend/__pycache__/
 backend/*.pyc
 backend/venv/
