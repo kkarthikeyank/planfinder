@@ -28,6 +28,14 @@ import check_refs
 app = Flask(__name__)
 CORS(app)
 
+# IMPORTANT: JOBS/REFJOBS below are plain in-process dicts, not a shared store
+# (no Redis/DB). gunicorn MUST run with a single worker process (see
+# Procfile/render.yaml: `--workers 1 --threads N`). Multiple worker
+# PROCESSES each get their own copy of these dicts -- a job created by one
+# worker becomes invisible ("Job not found") the moment a later request from
+# the same browser happens to land on a different worker. Threads within one
+# process share memory correctly, which is why concurrency is scaled via
+# --threads instead of --workers here.
 JOBS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "jobs")
 os.makedirs(JOBS_DIR, exist_ok=True)
 
